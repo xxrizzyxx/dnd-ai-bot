@@ -21,4 +21,4 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: python bot.py......кароче это на времявсе точки убери и все
+        run: python bot.py
