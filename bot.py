@@ -1,9 +1,7 @@
 import os
 import json
-import re
-import requests
 import random
-import time
+import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -84,16 +82,16 @@ def init_world(user_id):
     if user_id not in world_state:
         world_state[user_id] = {
             "location": "деревня",
-            "quests": {"актив": "Поговори со старейшиной в деревне.", "выполн": []},
-            "flags": {"знает_старейшину": False, "амулет_найден": False, "сундук_открыт": False},
-            "npcs": {"старейшина": {"диалог": "Приветствую! В лесу появился злой дух. Принеси мне его амулет."}},
+            "quests": {"актив": "Исследуй мир и найди своё приключение.", "выполн": []},
+            "flags": {},
+            "npcs": {},
             "inventory_world": [],
             "story_log": []
         }
         save_json(WORLD_FILE, world_state)
     return world_state[user_id]
 
-# ---------- ЗАПРОС К DEEPSEEK (ИСПРАВЛЕННЫЙ) ----------
+# ---------- ЗАПРОС К DEEPSEEK (НА ВСЕ ДЕЙСТВИЯ) ----------
 def ask_deepseek(user_input, roll, char_data, world):
     if not DEEPSEEK_API_KEY:
         return "⚠️ Нет API-ключа DeepSeek. Добавь DEEPSEEK_API_KEY в .env"
@@ -108,14 +106,14 @@ def ask_deepseek(user_input, roll, char_data, world):
     stat_str = ", ".join([f"{k.upper()}: {v}" for k, v in stats.items()])
     
     prompt = (
-        f"Ты Мастер D&D. Игрок: {name}, {char_class} {level} уровня. "
-        f"Характеристики: {stat_str}. "
-        f"Локация: {location}. Квест: {quest}. "
-        f"События: {flags}. "
-        f"Игрок написал: «{user_input}». Бросок d20: {roll}. "
-        f"Опиши, что происходит. Дай атмосферный ответ, развивай сюжет. "
-        f"Если игрок делает глупость — покажи последствия, но не убивай без предупреждения. "
-        f"Отвечай на русском языке."
+        f"Ты — Мастер D&D. Весь мир — это фэнтезийная вселенная."
+        f"Персонаж: {name}, {char_class} {level} уровня. Характеристики: {stat_str}."
+        f"Локация: {location}. Квест: {quest}. Флаги: {flags}."
+        f"Игрок написал: «{user_input}». Бросок d20: {roll}."
+        f"Опиши результат этого действия **максимально подробно, атмосферно и красочно**. Раскрой мир, эмоции персонажа, реакцию окружения, звуки, запахи, ощущения."
+        f"Если бросок удачный (16-20) — опиши успех ярко. Если средний (8-15) — опиши с нюансами, не идеально. Если низкий (1-7) — опиши неудачу или комичный провал."
+        f"Не сокращай ответ. Пиши как писатель-фантаст. Минимум 3-4 абзаца."
+        f"Отвечай строго на русском языке."
     )
     
     headers = {
@@ -126,11 +124,11 @@ def ask_deepseek(user_input, roll, char_data, world):
     data = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "Ты суровый, но справедливый Мастер D&D. Играй роль, будь атмосферным."},
+            {"role": "system", "content": "Ты — талантливый писатель и суровый Мастер D&D. Твои ответы всегда длинные, детализированные и захватывающие."},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.9,
-        "max_tokens": 500
+        "temperature": 0.95,
+        "max_tokens": 1200
     }
     
     try:
@@ -138,13 +136,13 @@ def ask_deepseek(user_input, roll, char_data, world):
             "https://api.deepseek.com/chat/completions",
             headers=headers,
             json=data,
-            timeout=20
+            timeout=25
         )
         
         if response.status_code == 200:
             return response.json()["choices"][0]["message"]["content"]
         else:
-            return f"⚠️ Ошибка API: {response.status_code}\n{response.text[:200]}"
+            return f"⚠️ Ошибка API: {response.status_code}\n{response.text[:300]}"
     except Exception as e:
         return f"⚠️ Ошибка подключения: {str(e)}"
 
@@ -153,9 +151,24 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     active_name, _ = get_active_char(user_id)
     if active_name:
-        await update.message.reply_text(f"🧙‍♂️ С возвращением! Активен: **{active_name}**.\n\n📍 Ты в мире D&D. Напиши, что делаешь (осмотреться, идти в лес, поговорить со старейшиной).")
+        await update.message.reply_text(
+            f"🧙‍♂️ Добро пожаловать в мир приключений, {active_name}!\n"
+            f"Ты находишься в таверне на окраине деревни. Что ты хочешь сделать?\n\n"
+            f"Просто напиши своё действие — я расскажу, что произойдёт."
+        )
     else:
-        await update.message.reply_text("🧙‍♂️ Добро пожаловать! Создай персонажа: «хочу нового персонажа».")
+        await update.message.reply_text(
+            "🧙‍♂️ Приветствую, искатель приключений!\n"
+            "Для начала создай персонажа: напиши **«хочу нового персонажа»** или **/new**."
+        )
+
+async def new_char(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    if user_id in creation_steps:
+        del creation_steps[user_id]
+    creation_steps[user_id] = {"step": "name"}
+    ctx.user_data['temp_char'] = {}
+    await update.message.reply_text("🧙‍♂️ Как зовут твоего героя?")
 
 async def list_chars(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
@@ -244,20 +257,13 @@ async def random_character(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Создан! Лист:")
     await update.message.reply_text(format_character_sheet(char_data))
 
-async def new_char(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    if user_id in creation_steps:
-        del creation_steps[user_id]
-    creation_steps[user_id] = {"step": "name"}
-    ctx.user_data['temp_char'] = {}
-    await update.message.reply_text("🧙‍♂️ Создаём героя! Как его зовут?")
-
-# ---------- ОСНОВНАЯ ЛОГИКА ----------
+# ---------- ОСНОВНАЯ ЛОГИКА (ВСЁ ЧЕРЕЗ ИИ) ----------
 async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     user_text = update.message.text
     text_lower = user_text.lower()
 
+    # Команды
     if "хочу нового персонажа" in text_lower or "/new" in text_lower:
         await new_char(update, ctx); return
     if "/list" in text_lower:
@@ -269,132 +275,32 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if text_lower.startswith("/inventory"):
         await inventory(update, ctx); return
 
+    # Процесс создания
     if user_id in creation_steps:
         await handle_creation(update, ctx)
         return
 
+    # Проверка персонажа
     active_name, char_data = get_active_char(user_id)
     if not char_data:
         await update.message.reply_text("Нет персонажа. Создай: «хочу нового персонажа».")
         return
 
+    # Инициализация мира
     if user_id not in world_state:
         init_world(user_id)
     world = world_state[user_id]
-    location = world.get("location", "деревня")
-    
-    # Проверка на команды осмотра и перемещения (остаётся без изменений)
-    if "осмотреться" in text_lower or "осмотр" in text_lower:
-        if location == "деревня":
-            response = "🌾 Ты в деревне. Видишь: таверну, кузницу, дом старейшины и тропу в лес."
-        elif location == "лес":
-            response = "🌲 Ты в тёмном лесу. Слышно пение птиц и шорох листьев. Есть тропа к пещере."
-        elif location == "пещера":
-            response = "🕯️ Ты в сырой пещере. Слышен звук капающей воды. Глубоко в темноте кто-то шевелится."
-        elif location == "замок":
-            response = "🏰 Ты у ворот старого замка. Они приоткрыты. Внутри слышны шаги."
-        else:
-            response = f"📍 Ты в {location}. Осмотрись внимательнее."
-        await update.message.reply_text(response)
-        return
 
-    if "идти" in text_lower:
-        if "деревня" in text_lower:
-            world["location"] = "деревня"
-            response = "🚶 Ты возвращаешься в деревню."
-        elif "лес" in text_lower:
-            world["location"] = "лес"
-            response = "🌳 Ты входишь в лес. Ветви скрывают небо."
-        elif "пещера" in text_lower:
-            world["location"] = "пещера"
-            response = "🕳️ Ты входишь в пещеру. Темно и сыро."
-        elif "замок" in text_lower:
-            world["location"] = "замок"
-            response = "🏰 Ты подходишь к замку. Ворота скрипят."
-        else:
-            response = "❓ Я не знаю такого места. Можно пойти в: деревня, лес, пещера, замок."
-        save_json(WORLD_FILE, world_state)
-        await update.message.reply_text(response)
-        return
-
-    if "поговорить" in text_lower or "сказать" in text_lower:
-        if "старейшина" in text_lower:
-            npc_text = world.get("npcs", {}).get("старейшина", {}).get("диалог", "Старейшина молчит.")
-            response = f"👴 Старейшина: «{npc_text}»"
-            if not world.get("flags", {}).get("знает_старейшину"):
-                world["flags"]["знает_старейшину"] = True
-                response += "\n\n📜 Ты получил квест: принеси амулет из леса."
-                world["quests"]["актив"] = "Найди амулет в лесу и верни старейшине."
-            save_json(WORLD_FILE, world_state)
-            await update.message.reply_text(response)
-            return
-
-    if "искать" in text_lower or "поиск" in text_lower:
-        if location == "лес" and not world.get("flags", {}).get("амулет_найден"):
-            if random.random() < 0.6:
-                world["flags"]["амулет_найден"] = True
-                world["inventory_world"].append("амулет леса")
-                response = "🍃 Ты нашёл амулет под корнями дуба! Он светится тусклым светом."
-            else:
-                response = "🔍 Ты обыскал лес, но ничего не нашёл. Попробуй ещё раз."
-            save_json(WORLD_FILE, world_state)
-            await update.message.reply_text(response)
-            return
-        elif location == "пещера" and not world.get("flags", {}).get("сундук_открыт"):
-            if random.random() < 0.5:
-                world["flags"]["сундук_открыт"] = True
-                world["inventory_world"].append("золотая монета")
-                response = "💰 Ты нашёл сундук с 50 золотыми монетами!"
-            else:
-                response = "🕳️ В пещере темно, ты ничего не видишь."
-            save_json(WORLD_FILE, world_state)
-            await update.message.reply_text(response)
-            return
-
-    if "квест" in text_lower:
-        await update.message.reply_text(f"📜 **Текущий квест:** {world.get('quests', {}).get('актив', 'Нет активного квеста.')}")
-        return
-
-    if "бить" in text_lower or "атака" in text_lower:
-        d20 = random.randint(1, 20)
-        if d20 >= 15:
-            response = f"⚔️ Ты атакуешь! Бросок d20: {d20}. Урон: {random.randint(5,10)}. Враг ранен!"
-        elif d20 >= 10:
-            response = f"🎲 Бросок d20: {d20}. Ты попадаешь, но слабо. Урон 2."
-        else:
-            response = f"💨 Бросок d20: {d20}. Промах! Враг смеётся."
-        await update.message.reply_text(response)
-        return
-
-    if "статы" in text_lower:
-        stats = char_data.get('stats', {})
-        response = f"📊 **Характеристики:**\n" + "\n".join([f"{k.upper()}: {v}" for k, v in stats.items()])
-        await update.message.reply_text(response)
-        return
-
-    if "помощь" in text_lower or "help" in text_lower:
-        response = (
-            "📖 **Доступные действия:**\n"
-            "• осмотреться — увидеть окружение\n"
-            "• идти в [лес/деревню/пещеру/замок] — переместиться\n"
-            "• поговорить со старейшиной — получить квест\n"
-            "• искать — найти предметы\n"
-            "• квест — проверить задание\n"
-            "• бить/атака — сразиться с врагом\n"
-            "• статы — посмотреть характеристики\n"
-            "• инвентарь — посмотреть вещи"
-        )
-        await update.message.reply_text(response)
-        return
-
-    # Если ничего не подошло — отправляем в DeepSeek
+    # Бросок кубика
     roll = random.randint(1, 20)
+    
+    # Отправляем запрос в DeepSeek
     await update.message.reply_text(f"🎲 Мастер слушает... (бросок d20: {roll})")
     
     response = ask_deepseek(user_text, roll, char_data, world)
     
-    # Опыт и уровень
-    xp_gain = random.randint(5, 15)
+    # Опыт и уровень (за любое действие)
+    xp_gain = random.randint(5, 20)
     char_data['xp'] = char_data.get('xp', 0) + xp_gain
     level = char_data.get('level', 1)
     if char_data['xp'] >= level * 30:
@@ -404,8 +310,10 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         save_json(CHARACTER_FILE, user_characters)
         response += f"\n\n🎉 Ты достиг {char_data['level']} уровня!"
     
+    # Сохраняем лог
     world["story_log"] = world.get("story_log", []) + [f"{user_text} -> {response[:100]}..."]
     save_json(WORLD_FILE, world_state)
+    
     await update.message.reply_text(response)
 
 # ---------- СОЗДАНИЕ ПЕРСОНАЖА ----------
@@ -498,7 +406,6 @@ def format_character_sheet(char_data):
         f"📖 **Предыстория:**\n{char_data.get('background', 'Не указана')}"
     )
 
-# ---------- ЗАПУСК ----------
 def main():
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN не найден в .env!")
@@ -514,7 +421,7 @@ def main():
     app.add_handler(CommandHandler("inventory", inventory))
     app.add_handler(CommandHandler("random", random_character))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    print("✅ D&D-бот с DeepSeek готов!")
+    print("✅ D&D-бот с DeepSeek (полные ответы) запущен!")
     app.run_polling()
 
 if __name__ == '__main__':
