@@ -118,7 +118,7 @@ def ask_deepseek(user_input, roll, char_data, world):
     }
     
     data = {
-        "model": "deepseek/deepseek-chat-v3-0324:free",
+        "model": "qwen/qwen-2.5-7b-instruct",  # Бесплатно, мощная
         "messages": [
             {"role": "system", "content": "Ты — талантливый писатель и суровый Мастер D&D. Твои ответы всегда длинные, детализированные и захватывающие."},
             {"role": "user", "content": prompt}
