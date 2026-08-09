@@ -91,10 +91,10 @@ def init_world(user_id):
         save_json(WORLD_FILE, world_state)
     return world_state[user_id]
 
-# ---------- ЗАПРОС К DEEPSEEK (НА ВСЕ ДЕЙСТВИЯ) ----------
+# ---------- ЗАПРОС К OPENROUTER (БЕСПЛАТНЫЙ DEEPSEEK) ----------
 def ask_deepseek(user_input, roll, char_data, world):
     if not DEEPSEEK_API_KEY:
-        return "⚠️ Нет API-ключа DeepSeek. Добавь DEEPSEEK_API_KEY в .env"
+        return "⚠️ Нет API-ключа. Добавь DEEPSEEK_API_KEY в .env"
     
     location = world.get("location", "неизвестно")
     quest = world.get("quests", {}).get("актив", "нет")
@@ -106,14 +106,10 @@ def ask_deepseek(user_input, roll, char_data, world):
     stat_str = ", ".join([f"{k.upper()}: {v}" for k, v in stats.items()])
     
     prompt = (
-        f"Ты — Мастер D&D. Весь мир — это фэнтезийная вселенная."
-        f"Персонаж: {name}, {char_class} {level} уровня. Характеристики: {stat_str}."
-        f"Локация: {location}. Квест: {quest}. Флаги: {flags}."
-        f"Игрок написал: «{user_input}». Бросок d20: {roll}."
-        f"Опиши результат этого действия **максимально подробно, атмосферно и красочно**. Раскрой мир, эмоции персонажа, реакцию окружения, звуки, запахи, ощущения."
-        f"Если бросок удачный (16-20) — опиши успех ярко. Если средний (8-15) — опиши с нюансами, не идеально. Если низкий (1-7) — опиши неудачу или комичный провал."
-        f"Не сокращай ответ. Пиши как писатель-фантаст. Минимум 3-4 абзаца."
-        f"Отвечай строго на русском языке."
+        f"Ты — Мастер D&D. Игрок: {name}, {char_class} {level} уровня. "
+        f"Характеристики: {stat_str}. Локация: {location}. Квест: {quest}. "
+        f"Флаги: {flags}. Игрок написал: «{user_input}». Бросок d20: {roll}. "
+        f"Опиши результат максимально подробно, атмосферно и красочно. Минимум 3 абзаца. Отвечай на русском."
     )
     
     headers = {
@@ -122,29 +118,28 @@ def ask_deepseek(user_input, roll, char_data, world):
     }
     
     data = {
-        "model": "deepseek-chat",
+        "model": "deepseek/deepseek-chat-v3-0324:free",
         "messages": [
             {"role": "system", "content": "Ты — талантливый писатель и суровый Мастер D&D. Твои ответы всегда длинные, детализированные и захватывающие."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.95,
-        "max_tokens": 1200
+        "max_tokens": 1000
     }
     
     try:
         response = requests.post(
-            "https://api.deepseek.com/chat/completions",
+            "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
             json=data,
             timeout=25
         )
-        
         if response.status_code == 200:
             return response.json()["choices"][0]["message"]["content"]
         else:
             return f"⚠️ Ошибка API: {response.status_code}\n{response.text[:300]}"
     except Exception as e:
-        return f"⚠️ Ошибка подключения: {str(e)}"
+        return f"⚠️ Ошибка: {str(e)}"
 
 # ---------- КОМАНДЫ ----------
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -257,13 +252,12 @@ async def random_character(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Создан! Лист:")
     await update.message.reply_text(format_character_sheet(char_data))
 
-# ---------- ОСНОВНАЯ ЛОГИКА (ВСЁ ЧЕРЕЗ ИИ) ----------
+# ---------- ОСНОВНАЯ ЛОГИКА ----------
 async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     user_text = update.message.text
     text_lower = user_text.lower()
 
-    # Команды
     if "хочу нового персонажа" in text_lower or "/new" in text_lower:
         await new_char(update, ctx); return
     if "/list" in text_lower:
@@ -275,31 +269,24 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if text_lower.startswith("/inventory"):
         await inventory(update, ctx); return
 
-    # Процесс создания
     if user_id in creation_steps:
         await handle_creation(update, ctx)
         return
 
-    # Проверка персонажа
     active_name, char_data = get_active_char(user_id)
     if not char_data:
         await update.message.reply_text("Нет персонажа. Создай: «хочу нового персонажа».")
         return
 
-    # Инициализация мира
     if user_id not in world_state:
         init_world(user_id)
     world = world_state[user_id]
 
-    # Бросок кубика
     roll = random.randint(1, 20)
-    
-    # Отправляем запрос в DeepSeek
     await update.message.reply_text(f"🎲 Мастер слушает... (бросок d20: {roll})")
     
     response = ask_deepseek(user_text, roll, char_data, world)
     
-    # Опыт и уровень (за любое действие)
     xp_gain = random.randint(5, 20)
     char_data['xp'] = char_data.get('xp', 0) + xp_gain
     level = char_data.get('level', 1)
@@ -310,10 +297,8 @@ async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         save_json(CHARACTER_FILE, user_characters)
         response += f"\n\n🎉 Ты достиг {char_data['level']} уровня!"
     
-    # Сохраняем лог
     world["story_log"] = world.get("story_log", []) + [f"{user_text} -> {response[:100]}..."]
     save_json(WORLD_FILE, world_state)
-    
     await update.message.reply_text(response)
 
 # ---------- СОЗДАНИЕ ПЕРСОНАЖА ----------
@@ -421,7 +406,7 @@ def main():
     app.add_handler(CommandHandler("inventory", inventory))
     app.add_handler(CommandHandler("random", random_character))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    print("✅ D&D-бот с DeepSeek (полные ответы) запущен!")
+    print("✅ D&D-бот с OpenRouter (DeepSeek бесплатно) запущен!")
     app.run_polling()
 
 if __name__ == '__main__':
