@@ -529,7 +529,7 @@ def ask_deepseek(user_input, roll, char_data, world):
               f"Игрок написал: «{user_input}». Бросок d20: {roll}. "
               f"Опиши результат максимально подробно, атмосферно и красочно. Минимум 3 абзаца. Отвечай на русском.")
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-    data = {"model": "google/gemini-2.0-flash-lite-001", "messages": [{"role": "system", "content": "Ты — талантливый писатель и суровый Мастер D&D."}, {"role": "user", "content": prompt}], "temperature": 0.95, "max_tokens": 1000}
+    data = {"model": "meta-llama/llama-3.1-8b-instruct:free", "messages": [{"role": "system", "content": "Ты — талантливый писатель и суровый Мастер D&D."}, {"role": "user", "content": prompt}], "temperature": 0.95, "max_tokens": 1000}
     try:
         response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=25)
         if response.status_code == 200:
