@@ -2,6 +2,7 @@ import os
 import json
 import random
 import requests
+import re
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -166,7 +167,166 @@ def auto_save(user_id):
     if user_id in user_characters and user_id in world_state:
         save_to_supabase(user_id, user_characters[user_id], world_state[user_id])
 
-# ---------- ВСЕ КОМАНДЫ ----------
+# ---------- ПРОВЕРКА ОТВЕТА НА РУССКИЙ ЯЗЫК ----------
+def is_russian_text(text):
+    """Проверяет, содержит ли текст преимущественно русские символы"""
+    if not text:
+        return False
+    
+    # Убираем имена собственные (могут содержать латиницу)
+    # Простая проверка: считаем долю русских букв
+    russian_chars = len(re.findall(r'[а-яА-ЯёЁ]', text))
+    total_chars = len(re.sub(r'[0-9\s\W]', '', text))  # Убираем цифры, пробелы, знаки препинания
+    
+    if total_chars == 0:
+        return True  # Если нет букв, считаем ок
+    
+    # Если русских букв меньше 70%, считаем текст проблемным
+    return (russian_chars / total_chars) >= 0.7
+
+def clean_response(text):
+    """Очищает ответ от мусора, если это возможно"""
+    if not text:
+        return text
+    
+    # Удаляем строки с техническими терминами
+    tech_patterns = [
+        r'(?i)\b(PostgreSQL|SCRIPTING|Methodology|API|JSON|HTTP|TCP|IP|DNS|SQL|NoSQL)\b',
+        r'(?i)\b(frowns|bewilderment|mix of|locals|the|this|these|those)\b',
+        r'[^\w\s\.,!?\-:;()\nа-яА-ЯёЁ]'  # Удаляем странные символы
+    ]
+    
+    for pattern in tech_patterns:
+        text = re.sub(pattern, '', text)
+    
+    # Удаляем множественные пробелы
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Удаляем китайские символы
+    text = re.sub(r'[\u4e00-\u9fff]', '', text)
+    
+    return text.strip()
+
+def is_garbage_response(text):
+    """Проверяет, является ли ответ мусором"""
+    if not text or len(text) < 20:
+        return True
+    
+    # Слишком много латиницы
+    latin_chars = len(re.findall(r'[a-zA-Z]', text))
+    total_chars = len(text)
+    if total_chars > 0 and (latin_chars / total_chars) > 0.3:
+        return True
+    
+    # Слишком много технических терминов
+    tech_terms = ['PostgreSQL', 'SCRIPTING', 'Methodology', 'API', 'JSON', 'HTTP', 'TCP']
+    for term in tech_terms:
+        if term in text:
+            return True
+    
+    # Есть китайские символы
+    if re.search(r'[\u4e00-\u9fff]', text):
+        return True
+    
+    return False
+
+def ask_deepseek(user_input, roll, char_data, world, retry_count=0):
+    if not DEEPSEEK_API_KEY:
+        return "⚠️ Нет API-ключа DeepSeek."
+    
+    if retry_count >= 2:
+        return "⚠️ Извините, произошла ошибка при генерации ответа. Попробуйте переформулировать свой запрос."
+    
+    location = world.get("location", "неизвестно")
+    quest = world.get("quests", {}).get("актив", "нет")
+    flags = world.get("flags", {})
+    name = char_data.get("name", "Герой")
+    char_class = char_data.get("class", "воин")
+    level = char_data.get("level", 1)
+    stats = char_data.get("stats", {})
+    stat_str = ", ".join([f"{k.upper()}: {v}" for k, v in stats.items()])
+    style = world.get("style", "medieval")
+    difficulty = world.get("difficulty", "normal")
+    boss_active = world.get("boss_active", False)
+    boss_name = world.get("boss_name", "")
+    boss_hp = world.get("boss_hp", 0)
+    current_quest = world.get("current_quest")
+    style_names = {"medieval": "Средневековье", "modern": "Наше время", "cyberpunk": "Киберпанк", "steampunk": "Стимпанк", "fantasy": "Фэнтези", "pirate": "Пиратский"}
+    style_text = style_names.get(style, "Средневековье")
+    diff_text = {"easy": "лёгкая", "normal": "обычная", "hard": "сложная"}.get(difficulty, "обычная")
+    quest_text = f"Текущий квест: {current_quest['name']}. Прогресс: {world.get('quest_progress', 0)}/{current_quest['goal']}." if current_quest else ""
+    boss_text = f"Босс {boss_name} активен! HP: {boss_hp}." if boss_active else ""
+    
+    # Жёсткий system prompt для контроля языка
+    system_prompt = (
+        "ТЫ — МАСТЕР D&D. ТВОЯ ЗАДАЧА — ОТВЕЧАТЬ ИСКЛЮЧИТЕЛЬНО НА РУССКОМ ЯЗЫКЕ.\n\n"
+        "СТРОГИЕ ПРАВИЛА:\n"
+        "1. ОТВЕЧАЙ ТОЛЬКО НА РУССКОМ ЯЗЫКЕ. НИ СЛОВА НА КИТАЙСКОМ, АНГЛИЙСКОМ ИЛИ ДРУГИХ ЯЗЫКАХ.\n"
+        "2. НЕ ИСПОЛЬЗУЙ ПРОГРАММНЫЙ КОД, ТЕХНИЧЕСКИЕ ТЕРМИНЫ (PostgreSQL, API, JSON, HTTP, SCRIPTING, Methodology).\n"
+        "3. НЕ ПИШИ ВНУТРЕННИХ РАССУЖДЕНИЙ, НЕ ОБЪЯСНЯЙ СВОЙ ПРОЦЕСС МЫШЛЕНИЯ.\n"
+        "4. НЕ ВСТАВЛЯЙ СЛУЧАЙНЫЙ БЕССМЫСЛЕННЫЙ ТЕКСТ.\n"
+        "5. ТЫ — ХУДОЖЕСТВЕННЫЙ ПИСАТЕЛЬ, СОЗДАЮЩИЙ АТМОСФЕРНОЕ ОПИСАНИЕ СОБЫТИЙ В МИРЕ D&D.\n"
+        "6. ТВОЙ ОТВЕТ ДОЛЖЕН БЫТЬ ЦЕЛЬНЫМ, КРАСИВЫМ, АТМОСФЕРНЫМ РАССКАЗОМ. МИНИМУМ 3 АБЗАЦА.\n"
+        "7. ИМЕНА ПЕРСОНАЖЕЙ, NPC И ЛОКАЦИЙ ОСТАВЛЯЙ ТОЧНО ТАКИМИ, КАКИМИ ОНИ БЫЛИ ЗАДАНЫ. НЕ ПЕРЕВОДИ ИМЕНА.\n"
+        "8. НЕ ИСПОЛЬЗУЙ СЛОВА НА АНГЛИЙСКОМ ДАЖЕ СЛУЧАЙНО. ВСЕ ОПИСАНИЯ, ДИАЛОГИ, НАЗВАНИЯ ПРЕДМЕТОВ — ТОЛЬКО НА РУССКОМ.\n"
+        "9. ЕСЛИ ИГРОК ИСПОЛЬЗУЕТ ИМЯ С ЛАТИНСКИМИ СИМВОЛАМИ (например, Dr.R), ОБРАЩАЙСЯ К НЕМУ ПО ЭТОМУ ИМЕНИ ТОЧНО ТАК, КАК ОН ПРЕДСТАВИЛСЯ.\n\n"
+        "Ты — талантливый писатель и суровый Мастер D&D. Твой ответ должен быть насыщенным, живым и погружать игрока в мир приключений."
+    )
+    
+    prompt = (
+        f"Контекст игры:\n"
+        f"Игрок: {name}, {char_class} {level} уровня.\n"
+        f"Характеристики: {stat_str}.\n"
+        f"Локация: {location}.\n"
+        f"Стиль мира: {style_text}.\n"
+        f"Сложность: {diff_text}.\n"
+        f"{quest_text}\n"
+        f"{boss_text}\n"
+        f"Действие игрока: «{user_input}».\n"
+        f"Бросок d20: {roll}.\n\n"
+        f"Опиши результат максимально подробно, атмосферно и красочно. Минимум 3 абзаца. ВСЁ НА РУССКОМ ЯЗЫКЕ!"
+    )
+    
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+    data = {
+        "model": "openrouter/free",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.85,
+        "max_tokens": 1500
+    }
+    
+    try:
+        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()["choices"][0]["message"]["content"]
+            
+            # Проверяем ответ на качество
+            if is_garbage_response(result) or not is_russian_text(result):
+                # Если ответ плохой, пробуем перегенерировать
+                if retry_count < 2:
+                    return ask_deepseek(user_input, roll, char_data, world, retry_count + 1)
+                else:
+                    return "⚠️ Извините, генерация ответа временно недоступна. Пожалуйста, попробуйте ещё раз."
+            
+            # Очищаем ответ от возможного мусора
+            cleaned = clean_response(result)
+            
+            # Если очистка сильно сократила текст, возвращаем оригинал
+            if len(cleaned) < len(result) * 0.5:
+                return result
+            
+            return cleaned
+            
+        return f"⚠️ Ошибка API: {response.status_code}"
+    except Exception as e:
+        if retry_count < 2:
+            return ask_deepseek(user_input, roll, char_data, world, retry_count + 1)
+        return f"⚠️ Ошибка: {str(e)}"
+
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     char_data, world_data = load_from_supabase(user_id)
@@ -499,44 +659,6 @@ async def transform(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     save_json(CHARACTER_FILE, user_characters)
     auto_save(user_id)
     await update.message.reply_text(f"🔄 Ты превратился в {found_race}!")
-
-def ask_deepseek(user_input, roll, char_data, world):
-    if not DEEPSEEK_API_KEY:
-        return "⚠️ Нет API-ключа DeepSeek."
-    location = world.get("location", "неизвестно")
-    quest = world.get("quests", {}).get("актив", "нет")
-    flags = world.get("flags", {})
-    name = char_data.get("name", "Герой")
-    char_class = char_data.get("class", "воин")
-    level = char_data.get("level", 1)
-    stats = char_data.get("stats", {})
-    stat_str = ", ".join([f"{k.upper()}: {v}" for k, v in stats.items()])
-    style = world.get("style", "medieval")
-    difficulty = world.get("difficulty", "normal")
-    boss_active = world.get("boss_active", False)
-    boss_name = world.get("boss_name", "")
-    boss_hp = world.get("boss_hp", 0)
-    current_quest = world.get("current_quest")
-    style_names = {"medieval": "Средневековье", "modern": "Наше время", "cyberpunk": "Киберпанк", "steampunk": "Стимпанк", "fantasy": "Фэнтези", "pirate": "Пиратский"}
-    style_text = style_names.get(style, "Средневековье")
-    diff_text = {"easy": "лёгкая", "normal": "обычная", "hard": "сложная"}.get(difficulty, "обычная")
-    quest_text = f"Текущий квест: {current_quest['name']}. Прогресс: {world.get('quest_progress', 0)}/{current_quest['goal']}." if current_quest else ""
-    boss_text = f"Босс {boss_name} активен! HP: {boss_hp}." if boss_active else ""
-    prompt = (f"Ты — Мастер D&D. Игрок: {name}, {char_class} {level} уровня. "
-              f"Характеристики: {stat_str}. Локация: {location}. "
-              f"Стиль: {style_text}. Сложность: {diff_text}. "
-              f"Квест: {quest_text} {boss_text} "
-              f"Игрок написал: «{user_input}». Бросок d20: {roll}. "
-              f"Опиши результат максимально подробно, атмосферно и красочно. Минимум 3 абзаца. Отвечай на русском.")
-    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-    data = {"model": "openrouter/free", "messages": [{"role": "system", "content": "Ты — талантливый писатель и суровый Мастер D&D."}, {"role": "user", "content": prompt}], "temperature": 0.95, "max_tokens": 1000}
-    try:
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=25)
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
-        return f"⚠️ Ошибка API: {response.status_code}"
-    except Exception as e:
-        return f"⚠️ Ошибка: {str(e)}"
 
 async def handle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
